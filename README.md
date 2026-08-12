@@ -1,3 +1,6 @@
+## 项目结构
+
+```
 learn-llm-by-building/
 ├── tokenizer/                # 分词器相关目录
 │   ├── tokenizer.json        # 分词词表数据
@@ -8,3 +11,5 @@ learn-llm-by-building/
 ├── chat.py                   # 推理对话脚本：加载训练好的权重，实现交互式文本生成
 ├── LICENSE
 └── README.md
+
+```
