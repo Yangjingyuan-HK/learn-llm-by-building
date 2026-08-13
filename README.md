@@ -36,3 +36,244 @@ learn-llm-by-building/
     交互式推理脚本。加载训练完成的模型权重；提供对话交互入口。
 ***
 执行流程：原始文本 → tokenizer编码 → dataloader封装批次 → train.py训练模型 → chat.py加载权重进行对话推理
+
+# llm.py 模型架构
+## 1.PositionalEncoding
+$$
+\begin{align*}
+PE_{(pos, 2i)} &= \sin\left(pos \cdot 10000^{- \frac{2i}{d_{\text{model}}}}\right) \\
+PE_{(pos, 2i+1)} &= \cos\left(pos \cdot 10000^{- \frac{2i}{d_{\text{model}}}}\right)
+\end{align*}
+$$
+### 符号定义
+1. pos
+
+当前 token 在句子里的绝对位置，从 0,1,2,3... 依次递增。
+
+例：一句话 ```我 爱 编程```，```我``` 的 pos=0，```爱``` pos=1，```编程``` pos=2。
+
+2. dmodel
+
+词嵌入向量总维度，本项目设置 dmodel = 512。
+
+每个 token 会被映射成长度为 dmodel 的浮点向量，位置编码和嵌入向量维度一致，才能相加融合。
+
+3. i
+
+向量内成对维度组的索引，取值 0,1,2,3...
+
+### 位置编码公式的数学解释
+
+$$
+\begin{aligned}
+\sin(a + b) &= \sin a \cos b + \cos a \sin b \\
+\cos(a + b) &= \cos a \cos b - \sin a \sin b
+\end{aligned}
+$$
+
+假设两个位置差值为 k，即位置 pos + k 相对 pos 偏移 k：
+
+$$
+\begin{aligned}
+PE(pos + k, 2i) &= \sin \big((pos + k) \cdot \omega_i\big) = \sin(pos \cdot \omega_i + k \cdot \omega_i) \\
+PE(pos + k, 2i+1) &= \cos \big((pos + k) \cdot \omega_i\big) = \cos(pos \cdot \omega_i + k \cdot \omega_i)
+\end{aligned}
+$$
+
+$$
+\omega_i = 10000^{-\frac{2i}{d_{\text{model}}}}
+$$
+
+展开后能看到：位置 pos + k 的编码向量，可以由 pos 的编码向量、偏移量 k 的编码向量线性组合算出。
+这意味着模型只需要简单线性变换，就能识别任意两个 token 的相对距离，不需要学习位置参数。
+
+频率 $\omega_i$ 随 $i$ 增大单调递减：
+- 小 $i$（前半段维度）： $\omega_i$ 大 → 三角函数周期极长
+  周期长 = 数值变化缓慢，用来捕捉**远距离依赖**（句子开头和结尾的关联）
+- 大 $i$（后半段维度）： $\omega_i$ 小 → 三角函数周期很短
+  周期短 = 数值快速波动，用来捕捉**局部相邻词语**的细微位置差异
+
+把不同频率正弦/余弦塞进向量不同维度，相当于给位置信号做**多尺度频谱分解**，长短距离信息全部存进同一个向量。
+
+### 代码实现
+```
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_seq_len, dropout=0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        pe = torch.zeros(max_seq_len, d_model)
+        pos = torch.arange(0, max_seq_len).unsqueeze(1).float()
+        div = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
+        self.register_buffer('pe', pe.unsqueeze(0))
+    def forward(self, x):
+        return self.dropout(x + self.pe[:, :x.size(1)])
+```
+### 代码解析
+```
+self.dropout = nn.Dropout(dropout)
+```
+训练阶段随机置零输入张量部分元素并缩放剩余数值，抑制过拟合；`model.eval()`推理模式下自动关闭丢弃逻辑。参数`dropout`代表元素置零概率，本项目设置 0.1。
+
+```
+pe = torch.zeros(max_seq_len, d_model)
+```
+创建形状`[max_seq_len, d_model]`全零张量，预存储所有位置对应的编码向量。
+
+```
+pos = torch.arange(0, max_seq_len).unsqueeze(1).float()
+```
+- `torch.arange(0, max_seq_len)`：生成 0 到最大序列长度 - 1 的位置整数
+- `.unsqueeze(1)`：一维向量转为列向量`[T,1]`，适配广播乘法
+- `.float()`：转换浮点类型，三角函数仅支持浮点张量运算
+
+```
+div = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+pe[:, 0::2] = torch.sin(pos * div)
+pe[:, 1::2] = torch.cos(pos * div)
+```
+数学公式实现
+
+`[:, 0::2]`
+
+竖直方向（行）**全部保留不截断**
+
+水平方向（列）**做间隔采样，只取偶数列**
+
+```
+self.register_buffer('pe', pe.unsqueeze(0))
+```
+PyTorch `register_buffer(name, tensor)`接口解析：
+
+1. buffer 张量不属于可训练参数`nn.Parameter`，不参与反向传播梯度更新；
+
+2. 模型保存 / 加载时 buffer 会随权重文件一同存储；
+
+3. `pe.unsqueeze(0)`新增 batch 维度，形状从`[T,C]`变为`[1,T,C]`，可直接和任意 batch 输入广播相加。
+
+### 前向传播代码解析
+```
+def forward(self, x):
+    return self.dropout(x + self.pe[:, :x.size(1)])
+```
+输入`x`：词嵌入张量，shape = `[batch_size, seq_len, d_model]`
+
+1. `self.pe[:, :x.size(1)]`
+截取预计算位置编码前`seq_len`长度，适配当前输入真实序列长度，防止索引越界；
+
+2. `x + self.pe[:, :x.size(1)]`
+广播加法，将时序位置信息融合进词嵌入向量；
+
+3. `self.dropout(...)`
+叠加 dropout 正则，降低位置编码带来的过拟合风险；
+
+4. 返回融合位置信息后的嵌入张量，传入后续多头注意力模块。
+
+### 补充内容
+pe 原本形状：[T, C]
+
+pe.unsqueeze(0) → 新增第 0 维，变成 三维张量 [1, T, C]
+
+T：序列长度（token 数量）
+C：dmodel 嵌入维度
+
+什么是广播（broadcasting）？
+
+> 
+> 广播 : PyTorch/Numpy 的自动机制：**两个形状不完全一致的张量做加减乘除时，自动复制扩展维度，让两者形状匹配，再运算**
+**广播相加 : 依靠广播机制执行加法**
+```
+a = torch.tensor([1,2,3])
+b = torch.tensor([10])
+print(a + b)
+```
+```
+[11,12,13]
+```
+逻辑：自动把 `b` 复制成 `[10,10,10]` 再相加
+
+**广播相乘 : 依靠广播机制执行乘法**
+```
+pos = torch.arange(5).float()       # shape [5]
+pos_col = pos.unsqueeze(1)          # shape [5, 1]
+div = torch.arange(4).float()       # shape [4]
+
+res = pos_col * div
+print(res.shape)    # 输出 torch.Size([5, 4])
+```
+```
+pos_col = [[0.],
+           [1.],
+           [2.],
+           [3.],
+           [4.]]
+div = [0., 1., 2., 3.]
+
+相乘结果：
+[[0., 0., 0., 0.],
+ [0., 1., 2., 3.],
+ [0., 2., 4., 6.],
+ [0., 3., 6., 9.],
+ [0., 4., 8., 12.]]
+```
+## 2.MultiHeadAttention
+$$
+\begin{aligned}
+\text{Attention}(Q,K,V) &= \text{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V \\
+\text{head}_i &= \text{Attention}\big(QW_i^Q,\;KW_i^K,\;VW_i^V\big) \\
+\text{MultiHead}(Q,K,V) &= \text{Concat}\big(\text{head}_1,\text{head}_2,\dots,\text{head}_h\big)W^O
+\end{aligned}
+$$
+
+### 符号定义
+1. Q,K,V — Query、Key、Value
+
+- Q（Query 查询）：代表当前 token 想要寻找什么信息
+- K（Key 键）：代表所有 token 具备什么信息
+- V（Value 值）：代表所有 token 携带的内容信息
+
+在自注意力（Self-Attention）中，Q,K,V 来自同一输入 x。
+
+2. $W_i^Q,W_i^K,W_i^V$ — 分头投影权重矩阵
+
+- 输入向量 $x$：维度 $d_{\text{model}}$
+- 投影矩阵 $W_i^Q$：行数=输入维度，列数=输出维度
+- 输出 $q_i$：维度 $d_k$
+矩阵乘法完成一次线性空间变换，这个变换就叫**线性投影**。
+
+
+3. $QK^\top$ 矩阵乘法得到相似度分数矩阵，矩阵中元素代表第 t 个 Token 和第 s 个 Token 的关联程度。
+
+4. $\text{softmax}(z_j) = \frac{\exp(z_j)}{\sum_i \exp(z_i)}$ 对相似度矩阵最后一维归一化，将原始分数转换为总和为 1 的注意力权重分布，权重越大代表该 Token 越重要。
+
+5. Concat
+
+   把 h 个独立注意力头输出，在特征维度拼接。
+   单个头输出形状 [B,T,d_k]，拼接后恢复为 [B,T, $d_{\text{model}}$ ]，还原原始维度。
+
+### 代码实现
+```
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, n_heads, dropout=0.1):
+        super().__init__()
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.o_proj = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        q = self.q_proj(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+        k = self.k_proj(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+        v = self.v_proj(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+        mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=1).bool()
+        scores = scores.masked_fill(mask, float('-inf'))
+        attn = self.dropout(F.softmax(scores, dim=-1))
+        out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(B, T, C)
+        return self.o_proj(out)
+```
