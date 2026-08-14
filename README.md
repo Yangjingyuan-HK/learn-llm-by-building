@@ -251,6 +251,7 @@ $$
 
    把 h 个独立注意力头输出，在特征维度拼接。
    单个头输出形状 [B,T,d_k]，拼接后恢复为 [B,T, $d_{\text{model}}$ ]，还原原始维度。
+   并非向量相加，而是向量首尾横向拼接，过程中维度不变
 
 ### 代码实现
 ```
@@ -277,3 +278,148 @@ class MultiHeadAttention(nn.Module):
         out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(B, T, C)
         return self.o_proj(out)
 ```
+### 代码解析
+```
+self.q_proj = nn.Linear(d_model, d_model)
+self.k_proj = nn.Linear(d_model, d_model)
+self.v_proj = nn.Linear(d_model, d_model)
+```
+Pytorch nn.Linear(in_features, out_features, bias=True, device=None, dtype=None)
+
+- `in_features`：输入特征的**一维长度**
+- `out_features`：输出特征的**一维长度**
+
+用法：
+
+1.创建了一个 nn.Linear 模块实例；
+
+2.在模块内部自动分配两块可学习参数张量：
+
+weight：形状 [out_features, in_features] = [d_model, d_model]，也就是 $W_v$
+
+bias：形状 [d_model]，也就是偏置 $b_v$
+
+3.用默认策略随机填充 weight 和 bias；把这个模块赋值给 self.v_proj
+
+```
+self.o_proj = nn.Linear(d_model, d_model)
+```
+o_proj 的作用：把多个头的信息融合、重组、加权整合。
+### 前向传播代码解析
+```
+def forward(self, x):
+        B, T, C = x.shape
+```
+
+输入 x: [B, T, C]
+
+B = batch_size 批次大小
+    
+T = sequence length 序列长度（token数量）
+    
+C = d_model 模型隐层维度
+```
+q = self.q_proj(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+k = self.k_proj(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+v = self.v_proj(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+```
+```
+self.q_proj(x)
+```
+执行公式
+
+$$Q_{all} = X W_q^\top + b_q$$
+
+实际进行的矩阵运算：
+
+$$
+\begin{bmatrix}y_1 \\
+y_2\end{bmatrix} = \begin{bmatrix}
+w_{11} & w_{12} & w_{13} \\
+w_{21} & w_{22} & w_{23}
+\end{bmatrix}\begin{bmatrix}
+x_1 \\
+x_2 \\
+x_3
+\end{bmatrix} + \begin{bmatrix}b_1 \\
+b_2\end{bmatrix}
+$$
+
+输出形状：`[B, T, d_model]`
+```
+.view(B, T, self.n_heads, self.d_k)
+```
+等价 reshape：`d_model = n_heads * d_k`
+
+形状变为：`[B, T, n_heads, d_k]`
+```
+.transpose(1, 2)
+```
+交换维度 1 和 2，矩阵变为：`[B, n_heads, T, d_k]`
+
+为什么交换？
+
+方便后续批量矩阵乘法：**每个头独立并行做注意力计算**
+
+维度含义：`[batch, head_num, token_num, per_head_dim]`
+
+此时 q,k,v 形状统一：`[B, n_heads, T, d_k]`
+```
+scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+```
+- `k.transpose(-2, -1)`：`[B, h, T, d_k] → [B, h, d_k, T]`
+- `torch.matmul(q, k.transpose(-2,-1))`
+矩阵乘法：`[B,h,T,d_k] @ [B,h,d_k,T] = [B,h,T,T]`
+```
+mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=1).bool()
+scores = scores.masked_fill(mask, float('-inf'))
+```
+`.triu(torch.ones(T, T, device=x.device), diagonal=1)`：上三角矩阵，**对角线右上区域 = True**
+矩阵位置 $(i,j)$ ：
+
+$j$ > $i$ ：mask=True → 未来 token 不允许被看见
+把对应位置分数填充 -inf，经过 softmax 后权重趋近 0，实现不能偷看未来
+```
+attn = self.dropout(F.softmax(scores, dim=-1))
+```
+- `softmax(dim=-1)`：对**每一行（查询 token）**，所有 key token 权重归一化，总和 = 1；
+- `self.dropout`：注意力权重随机置零，正则化，防止过拟合。
+`attn` 形状：`[B, n_heads, T, T]`，就是注意力权重矩阵。
+```
+out = torch.matmul(attn, v)
+```
+执行了运算：
+
+[B,h,T,T] @ [B,h,T,d_k] = [B,h,T,d_k]
+
+`torch.matmul(a, b)`:
+
+**张量矩阵乘法**，根据两个张量维度自动选择不同运算规则。
+
+数学上： $C = AB$
+```
+out = out.transpose(1, 2).contiguous().view(B, T, C)
+```
+`.transpose(1,2)`：`[B,h,T,d_k] → [B,T,h,d_k]`
+
+`.view(B, T, C)`
+
+把 `[B,T,h,d_k]` 压扁回 `[B,T,h*d_k] = [B,T,C]`
+
+### 过程总结
+
+输入 X 分别投影得到 $Q_{all},K_{all},V_{all}$
+
+Q、K 计算相似度分数 $\dfrac{QK^\top}{\sqrt{d_k}}$
+
+softmax 得到注意力权重 $\text{attn}$
+
+注意力权重和 V 做矩阵乘法： $\text{head}_i = \text{softmax}(...)V_i$
+
+这里只有 attn × V，全程没有 Q+V、K+V
+
+所有 head 结果 Concat 拼接 得到 $Z_{\text{concat}}$
+
+拼接结果送入输出投影层：
+
+$$\boldsymbol{O} = Z_{\text{concat}} W_o^\top + b_o$$
