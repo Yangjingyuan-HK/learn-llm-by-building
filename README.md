@@ -37,6 +37,14 @@ learn-llm-by-building/
 ***
 执行流程：原始文本 → tokenizer编码 → dataloader封装批次 → train.py训练模型 → chat.py加载权重进行对话推理
 
+<p align="center">
+  <img src="./media/chat_demo.png" width="100%">
+</p>
+
+<p align="center">
+  <img src="./media/model_architecture.png" width="100%">
+</p>
+
 # llm.py 模型架构
 ## 1.PositionalEncoding
 $$
