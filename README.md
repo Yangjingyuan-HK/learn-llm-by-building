@@ -423,3 +423,42 @@ softmax 得到注意力权重 $\text{attn}$
 拼接结果送入输出投影层：
 
 $$\boldsymbol{O} = Z_{\text{concat}} W_o^\top + b_o$$
+
+## 3.FeedForward
+$$
+\text{FFN}(X) = \boldsymbol{W_2}\cdot \text{Dropout}\Big(\text{ReLU}\big(X\boldsymbol{W_1}^\top + \boldsymbol{b_1}\big)\Big) + \boldsymbol{b_2}
+$$
+### 代码实现
+```
+class FeedForward(nn.Module):
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super().__init__()
+        self.fc1 = nn.Linear(d_model, d_ff)
+        self.fc2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(dropout)
+    def forward(self, x):
+        return self.fc2(self.dropout(F.relu(self.fc1(x))))
+```
+### 代码解析
+```
+self.fc1 = nn.Linear(d_model, d_ff)
+```
+升维：
+
+把隐层维度由 $d_{\text{model}}$ 变为 $d_{\text{ff}}$
+
+一般 $d_{\text{ff}} = 4 * d_{\text{model}}$
+```
+self.dropout = nn.Dropout(dropout)
+```
+降维
+### 前向传播代码解析
+```
+def forward(self, x):
+        return self.fc2(self.dropout(F.relu(self.fc1(x))))
+```
+执行公式
+
+$$
+\text{FFN}(X) = \boldsymbol{W_2}\cdot \text{Dropout}\Big(\text{ReLU}\big(X\boldsymbol{W_1}^\top + \boldsymbol{b_1}\big)\Big) + \boldsymbol{b_2}
+$$
