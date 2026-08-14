@@ -462,3 +462,184 @@ def forward(self, x):
 $$
 \text{FFN}(X) = \boldsymbol{W_2}\cdot \text{Dropout}\Big(\text{ReLU}\big(X\boldsymbol{W_1}^\top + \boldsymbol{b_1}\big)\Big) + \boldsymbol{b_2}
 $$
+
+## 4.TransformerBlock
+本质上是一个封装单元，负责串联 Attn、FFN、残差、Norm、Dropout
+
+定义一套**标准执行流水线**：
+`残差分支计算 → 残差相加 → 归一化`
+### 代码实现
+```
+class TransformerBlock(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.attn = MultiHeadAttention(cfg.d_model, cfg.n_heads, cfg.dropout)
+        self.ffn = FeedForward(cfg.d_model, cfg.d_ff, cfg.dropout)
+        self.norm1 = nn.LayerNorm(cfg.d_model)
+        self.norm2 = nn.LayerNorm(cfg.d_model)
+        self.dropout = nn.Dropout(cfg.dropout)
+
+    def forward(self, x):
+        x = self.norm1(x + self.dropout(self.attn(x)))
+        x = self.norm2(x + self.dropout(self.ffn(x)))
+        return x
+```
+### 代码解析
+```
+self.norm1 = nn.LayerNorm(cfg.d_model)
+```
+Pytorch 定义：
+```
+nn.LayerNorm(normalized_shape, eps=1e-5, elementwise_affine=True)
+```
+normalized_shape ：**指定要执行归一化的维度大小**
+
+输入张量形状：[B,T,  $d_{\text{model}}$]
+
+分别对这三个维度进行归一化
+
+归一化公式：
+
+$$
+\hat{z}_i = \gamma \cdot \frac{z_i - \mu}{\sqrt{\sigma^2+\epsilon}} + \beta
+$$
+
+其中均值与方差：
+
+$$
+\mu = \frac{1}{d}\sum_{i=1}^d z_i,\quad \sigma^2 = \frac{1}{d}\sum_{i=1}^d (z_i-\mu)^2
+$$
+```
+x = self.norm1(x + self.dropout(self.attn(x)))
+```
+$$
+\boldsymbol{Y} = \boldsymbol{X} + \mathcal{F}(\boldsymbol{X})
+$$
+
+符号说明：
+- $\boldsymbol{X}$：模块输入原始特征
+- $\mathcal{F}(\boldsymbol{X})$：变换分支（多头注意力 / FFN 计算结果）
+- $\boldsymbol{Y}$：残差相加后的输出特征
+> 运算方式：张量逐元素相加，要求输入与分支输出维度一致。
+>
+逐元素相加：两个**形状完全一模一样**的张量 / 矩阵，**相同位置上的数字两两相加**。
+## 5.TransformerLM
+
+1. Token Embedding
+
+$$
+\boldsymbol{E} = \text{Embedding}(idx),\quad \boldsymbol{E}\in\mathbb{R}^{B\times T\times d_{model}}
+$$
+
+2. 叠加位置编码
+
+$$
+\boldsymbol{x}_0 = \boldsymbol{E} + \boldsymbol{PE}
+$$
+
+3. 多层TransformerBlock堆叠
+
+$$
+\boldsymbol{x}_{l+1} = \text{TransformerBlock}(\boldsymbol{x}_l),\quad l=0,1,\dots,n_{layers}-1
+$$
+
+4. 最终归一化
+
+$$
+\boldsymbol{x}_{final} = \text{LayerNorm}(\boldsymbol{x}_{n_{layers}})
+$$
+
+5. 映射至词表logits
+
+$$
+\boldsymbol{L} = \boldsymbol{x}_{final}\boldsymbol{E}^T
+$$
+
+#### 训练损失
+$$
+p_i = \text{Softmax}(L_i),\quad \mathcal{L}=-\frac{1}{N}\sum\log(p_{\text{target}})
+$$
+
+#### 生成时温度缩放
+$$
+\tilde{L}_i = \frac{L_i}{\tau},\quad \tau=\text{temperature}
+$$
+
+使用多项式采样从 $\text{Softmax}(\tilde{L})$ 中选取下一个token，循环拼接得到完整序列。
+### 代码实现
+```
+class TransformerLM(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+        self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        self.pos_enc = PositionalEncoding(cfg.d_model, cfg.max_seq_len, cfg.dropout)
+        self.blocks = nn.ModuleList([TransformerBlock(cfg) for _ in range(cfg.n_layers)])
+        self.norm_final = nn.LayerNorm(cfg.d_model)
+        self.lm_head = nn.Linear(cfg.d_model, cfg.vocab_size)
+        self.lm_head.weight = self.token_emb.weight
+
+    def forward(self, idx, targets=None):
+        x = self.pos_enc(self.token_emb(idx))
+        for block in self.blocks:
+            x = block(x)
+        logits = self.lm_head(self.norm_final(x))
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits[:, :-1, :].contiguous().view(-1, logits.size(-1)),
+                targets[:, 1:].contiguous().view(-1), ignore_index=-100
+            )
+        return logits, loss
+
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens=128, temperature=0.8):
+        self.eval()
+        for _ in range(max_new_tokens):
+            logits, _ = self(idx[:, -self.cfg.max_seq_len:])
+            probs = F.softmax(logits[:, -1, :] / temperature, dim=-1)
+            idx = torch.cat([idx, torch.multinomial(probs, 1)], dim=1)
+        return idx
+```
+### 代码解析
+```
+for block in self.blocks:
+    x = block(x)
+```
+循环执行多层 TransformerBlock
+```
+logits = self.lm_head(self.norm_final(x))
+```
+最终归一化 → 映射到词表维度，得到每个位置各个 token 原始得分。
+#### 损失部分
+```
+if targets is not None:
+    loss = F.cross_entropy(
+        logits[:, :-1, :].contiguous().view(-1, logits.size(-1)),
+        targets[:, 1:].contiguous().view(-1), ignore_index=-100
+    )
+```
+任务：自回归预测输入序列：\([t_0,t_1,t_2,t_3]\)
+
+目标序列：\([t_1,t_2,t_3,t_4]\)
+
+模型用前面词语预测下一个词语。
+
+代码：
+
+logits[:, :-1, :] 去掉最后一个位置
+
+targets[:, 1:] 目标整体向前偏移一位
+#### generate生成函数
+```
+@torch.no_grad()
+```
+不计算梯度，节省显存、加速推理
+```
+probs = F.softmax(logits[:, -1, :] / temperature, dim=-1)
+```
+`logits[:, -1, :]`：只取**最后一个位置**，预测下一个 token
+```
+idx = torch.cat([idx, torch.multinomial(probs, 1)], dim=1)
+```
+根据概率分布采样 1 个 token，拼接到序列末尾；循环直到生成 `max_new_tokens`。
