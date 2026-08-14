@@ -41,10 +41,42 @@ learn-llm-by-building/
   <img src="./media/chat_demo.png" width="100%">
 </p>
 
+
+# 模型训练说明
+## 数据集下载
+在根目录新建文件夹，名为 dataset
+
+前往 https://www.modelscope.cn/datasets/gongjy/minimind_dataset/files/
+
+使用minimind项目的数据集
+
+下载pretrain_t2t_mini.jsonl 和 sft_t2t_mini.jsonl两个文件到dataset文件夹
+
+## 模型训练
+激活环境并在终端输入
+```
+python train.py
+```
+即可开始训练
+
+训练时间：约6小时
+
+显存占用： 约12G
+
+训练成果：
+
+生成的checkpoints文件夹内，
+
+可以看到model_pretrain.pth 和 model_sft.pth两个权重文件
+
+pretrain模型使用无标注长文本训练；
+
+sft模型使用指令问答样本
+
+## 模型参数：0.022B FP32
 <p align="center">
   <img src="./media/model_architecture.png" width="100%">
 </p>
-
 # llm.py 模型架构
 ## 1.PositionalEncoding
 $$
