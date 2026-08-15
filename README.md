@@ -74,6 +74,12 @@ pretrain模型使用无标注长文本训练；
 sft模型使用指令问答样本
 
 ## 模型参数：0.022B FP32
+使用
+```
+python chat.py
+```
+调用 model_pretrain.pth 模型
+
 <p align="center">
   <img src="./media/model_architecture.png" width="100%">
 </p>
