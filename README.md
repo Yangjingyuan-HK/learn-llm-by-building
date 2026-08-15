@@ -62,6 +62,7 @@ python train.py
 训练时间：约6小时
 
 显存占用： 约12G
+***
 
 训练成果：
 
@@ -83,6 +84,8 @@ python chat.py
 <p align="center">
   <img src="./media/chat_pre.png" width="100%">
 </p>
+
+***
 
 使用
 ```
