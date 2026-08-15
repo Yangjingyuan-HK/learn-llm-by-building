@@ -77,6 +77,7 @@ sft模型使用指令问答样本
 <p align="center">
   <img src="./media/model_architecture.png" width="100%">
 </p>
+
 # llm.py 模型架构
 ## 1.PositionalEncoding
 $$
