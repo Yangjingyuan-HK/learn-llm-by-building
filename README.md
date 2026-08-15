@@ -102,6 +102,11 @@ python chat.py --sft
 </p>
 
 # llm.py 模型架构
+
+<p align="center">
+  <img src="./media/tf_1.png" width="35%">
+</p>
+
 ## 1.PositionalEncoding
 $$
 \begin{align*}
@@ -282,6 +287,7 @@ div = [0., 1., 2., 3.]
  [0., 4., 8., 12.]]
 ```
 ## 2.MultiHeadAttention
+
 $$
 \begin{aligned}
 \text{Attention}(Q,K,V) &= \text{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V \\
