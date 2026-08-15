@@ -97,6 +97,8 @@ python chat.py --sft
   <img src="./media/chat_post.png" width="100%">
 </p>
 
+***
+
 <p align="center">
   <img src="./media/model_architecture.png" width="100%">
 </p>
@@ -287,6 +289,10 @@ div = [0., 1., 2., 3.]
  [0., 4., 8., 12.]]
 ```
 ## 2.MultiHeadAttention
+
+<p align="center">
+  <img src="./media/tf_2.png" width="100%">
+</p>
 
 $$
 \begin{aligned}
