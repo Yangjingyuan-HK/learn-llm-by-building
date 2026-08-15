@@ -81,6 +81,20 @@ python chat.py
 调用 model_pretrain.pth 模型
 
 <p align="center">
+  <img src="./media/chat_pre.png" width="100%">
+</p>
+
+使用
+```
+python chat.py --sft
+```
+调用 model_sft.pth 模型
+
+<p align="center">
+  <img src="./media/chat_post.png" width="100%">
+</p>
+
+<p align="center">
   <img src="./media/model_architecture.png" width="100%">
 </p>
 
